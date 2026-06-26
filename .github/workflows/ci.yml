@@ -1,0 +1,110 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  # JOB 1: Validar Dummy A (sitio estático)
+  validate-dummy-a:
+    name: "Dummy A — Validar HTML"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Verificar existencia de index.html
+        run: |
+          if [ ! -f app/dummy-a/index.html ]; then
+            echo "ERROR: index.html no encontrado"
+            exit 1
+          fi
+          echo "index.html encontrado"
+
+      - name: Validar contenido esperado
+        run: |
+          if grep -q "Hola Mundo DevOps" app/dummy-a/index.html; then
+            echo "Mensaje 'Hola Mundo DevOps' encontrado"
+          else
+            echo "ERROR: Contenido esperado no encontrado"
+            exit 1
+          fi
+
+      - name: Instalar validador HTML (htmlhint)
+        run: npm install -g htmlhint
+
+      - name: Lint HTML
+        run: htmlhint app/dummy-a/index.html || true
+
+  # JOB 2: Testear Dummy B (Flask API)
+  test-dummy-b:
+    name: "Dummy B — Tests Flask"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        working-directory: app/dummy-b
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verificar sintaxis Python
+        working-directory: app/dummy-b
+        run: |
+          python -m py_compile app.py
+          echo "Sintaxis Python válida"
+
+      - name: Ejecutar tests con pytest
+        working-directory: app/dummy-b
+        run: |
+          pytest test_app.py -v --tb=short
+
+  # JOB 3: Empaquetar y publicar artifact
+  package:
+    name: "Empaquetar aplicación"
+    runs-on: ubuntu-latest
+    needs: [ validate-dummy-a, test-dummy-b ]
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Crear directorio de distribución
+        run: mkdir -p dist
+
+      - name: Empaquetar en ZIP
+        run: |
+          zip -r dist/app-deploy.zip \
+            app/ scripts/ nginx/ systemd/ \
+            --exclude "*.pyc" --exclude "__pycache__/*"
+          echo "Paquete creado: app-deploy.zip"
+          ls -lh dist/
+
+      - name: Publicar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-package
+          path: dist/app-deploy.zip
+          retention-days: 5
+
+      - name: Resumen del build
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo        | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch       | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit       | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Number | ${{ github.run_number }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact     | app-package |" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,114 @@
+name: CD Pipeline
+
+on:
+  # Se dispara automáticamente cuando CI termina con éxito en main
+  workflow_run:
+    workflows: [ "CI Pipeline" ]
+    branches:  [ main ]
+    types:     [ completed ]
+
+  # También permite disparo manual desde GitHub UI
+  workflow_dispatch:
+
+jobs:
+
+  deploy:
+    name: "Desplegar en Azure VM"
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+
+    # Solo despliega si CI pasó (o es disparo manual)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+
+      # 1. Determinar el run de CI del que se va a descargar el artifact
+      - name: Determinar run de CI
+        id: ci_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          else
+            RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow=ci.yml --branch=main --status=success --limit=1 --json databaseId --jq '.[0].databaseId')
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 2. Descargar el artifact generado por CI
+      - name: Descargar artifact de CI
+        uses: actions/download-artifact@v4
+        with:
+          name: app-package
+          run-id: ${{ steps.ci_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - run: ls -lh dist/
+
+      # 3. Configurar SSH
+      - name: Configurar clave SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AZURE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.AZURE_VM_HOST }}" >> ~/.ssh/known_hosts
+          echo "SSH configurado"
+
+      # 4. Copiar paquete al servidor
+      - name: Copiar paquete al servidor via SCP
+        run: |
+          scp -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=no \
+            dist/app-deploy.zip \
+            ${{ secrets.AZURE_VM_USER }}@${{ secrets.AZURE_VM_HOST }}:/tmp/app-deploy.zip
+          echo "Paquete copiado a la VM"
+
+      # 5. Ejecutar script de despliegue
+      - name: Ejecutar despliegue remoto
+        run: |
+          ssh -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=no \
+            ${{ secrets.AZURE_VM_USER }}@${{ secrets.AZURE_VM_HOST }} \
+            'bash /opt/deploy/deploy.sh /tmp/app-deploy.zip'
+
+      # 6. Verificar endpoints
+      - name: Verificar Dummy A (puerto 80)
+        run: |
+          sleep 5
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "http://${{ secrets.AZURE_VM_HOST }}:80" || echo "000")
+          echo "HTTP Status Dummy A: $HTTP_CODE"
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Dummy A responde correctamente en puerto 80"
+          else
+            echo "Dummy A no responde (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+      - name: Verificar Dummy B /health (puerto 8080)
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "http://${{ secrets.AZURE_VM_HOST }}:8080/health" || echo "000")
+          echo "HTTP Status Dummy B /health: $HTTP_CODE"
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Dummy B /health responde correctamente en puerto 8080"
+          else
+            echo "Dummy B no responde (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+      # 7. Resumen del deploy
+      - name: Resumen del despliegue
+        if: success()
+        run: |
+          echo "## Deploy exitoso" >> $GITHUB_STEP_SUMMARY
+          echo "| Servicio   | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Dummy A    | http://${{ secrets.AZURE_VM_HOST }}:80 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dummy B    | http://${{ secrets.AZURE_VM_HOST }}:8080/health |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit     | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY

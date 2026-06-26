@@ -1,0 +1,20 @@
+[Unit]
+Description=Dummy B — Flask API (Lab 06 UCU)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/dummy-b
+Environment="PORT=8080"
+Environment="APP_ENV=production"
+ExecStart=/opt/dummy-b/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dummy-b
+
+[Install]
+WantedBy=multi-user.target
