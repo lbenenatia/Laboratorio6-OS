@@ -2,7 +2,7 @@
 
 **Estudiante:** [Tu nombre aquí]  
 **Fecha:** [Fecha de entrega]  
-**Repositorio:** [URL del repositorio]  
+**Repositorio:** https://github.com/lbenenatia/Laboratorio6-OS  
 **URL pública Dummy A:** `http://<IP_VM>:80`  
 **URL pública Dummy B:** `http://<IP_VM>:8080/health`
 

@@ -4,11 +4,14 @@
 
 set -e
 
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
 echo "Setup inicial VM — Lab 06 DevOps UCU"
 
 # 1. Actualizar sistema
 echo "[1/7] Actualizando sistema..."
-apt-get update -y && apt-get upgrade -y
+apt-get update -y && apt-get upgrade -y -o Dpkg::Options::="--force-confold"
 
 # 2. Instalar paquetes base
 echo "[2/7] Instalando paquetes base..."
@@ -55,7 +58,7 @@ echo "[7/7] Configurando NGINX..."
 cp /tmp/lab06/nginx/dummy-a.conf /etc/nginx/sites-available/dummy-a
 ln -sf /etc/nginx/sites-available/dummy-a /etc/nginx/sites-enabled/dummy-a
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
+nginx -t && systemctl enable nginx --now && systemctl reload nginx
 echo "NGINX configurado"
 
 # 8. Instalar y habilitar servicio dummy-b 
