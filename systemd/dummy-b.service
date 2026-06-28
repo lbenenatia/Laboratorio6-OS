@@ -4,7 +4,6 @@ After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
 WorkingDirectory=/opt/dummy-b
 Environment="PORT=8080"
 Environment="APP_ENV=production"
