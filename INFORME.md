@@ -1,10 +1,6 @@
 # INFORME — Laboratorio 06: DevOps Moderno con GitHub Actions
-
-**Estudiante:** [Tu nombre aquí]  
-**Fecha:** [Fecha de entrega]  
-**Repositorio:** https://github.com/lbenenatia/Laboratorio6-OS  
-**URL pública Dummy A:** `http://<IP_VM>:80`  
-**URL pública Dummy B:** `http://<IP_VM>:8080/health`
+**URL pública Dummy A:** `http://102.37.120.118:80`  
+**URL pública Dummy B:** `http://102.37.120.118:8080/health`
 
 ---
 
@@ -113,7 +109,7 @@ Azure VM Ubuntu 24.04
 ## 3. Estructura del Repositorio
 
 ```
-lab06-devops/
+Laboratorio6-OS/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml          # Pipeline de integración continua
@@ -142,9 +138,9 @@ lab06-devops/
 
 ### 4.1 Configuración de la VM en Azure
 
-Se creó una VM Ubuntu 24.04 LTS (tamaño B1s) con:
-- IP pública estática
-- NSG permitiendo puertos: 22 (SSH), 80 (HTTP), 8080 (Flask)
+Se usó una VM Ubuntu 24.04 LTS ya existente, con:
+- IP pública (dinámica al momento de escribir este informe; pendiente pasarla a estática para que no rompa el secret `AZURE_VM_HOST` si la VM se reinicia)
+- NSG permitiendo puertos: 22 (SSH), 80 (HTTP), 443, 8080 (Flask)
 
 Se ejecutó el script `setup_vm.sh` para instalar NGINX, Python, configurar el firewall y los servicios systemd.
 
@@ -155,7 +151,7 @@ Se configuraron los siguientes secretos en `Settings → Secrets and variables �
 | Secret | Descripción |
 |--------|-------------|
 | `AZURE_VM_HOST` | IP pública de la VM |
-| `AZURE_VM_USER` | Usuario SSH (ej: `ubuntu`) |
+| `AZURE_VM_USER` | Usuario SSH (`azureuser`) |
 | `AZURE_SSH_PRIVATE_KEY` | Clave privada SSH (contenido del archivo .pem) |
 
 ### 4.3 Pipeline CI (`ci.yml`)
@@ -172,22 +168,24 @@ Se configuraron los siguientes secretos en `Settings → Secrets and variables �
 **Trigger:** `workflow_run` cuando CI completa exitosamente en `main`, o `workflow_dispatch` manual.
 
 **Jobs:**
-1. Re-empaqueta la aplicación.
-2. Configura la clave SSH usando el secret `AZURE_SSH_PRIVATE_KEY`.
-3. Copia el ZIP a la VM via SCP.
-4. Ejecuta `deploy.sh` remotamente via SSH.
-5. Verifica que ambos endpoints devuelven HTTP 200.
+1. Determina de qué run de CI descargar el artifact (el del propio `workflow_run`, o el último run exitoso en `main` si el disparo fue manual).
+2. Descarga el artifact `app-package` publicado por CI (no reconstruye el paquete).
+3. Configura la clave SSH usando el secret `AZURE_SSH_PRIVATE_KEY`.
+4. Copia el ZIP a la VM via SCP.
+5. Ejecuta `deploy.sh` remotamente via SSH, con `sudo` (el script necesita permisos de root para escribir en `/var/www`, `/opt/dummy-b`, reiniciar servicios systemd y escribir el log).
+6. Verifica que ambos endpoints devuelven HTTP 200.
 
 ### 4.5 Script de Deploy en VM (`deploy.sh`)
 
 El script ejecuta en la VM:
-1. Extrae el ZIP recibido.
-2. Copia `index.html` a `/var/www/dummy-a/` (servido por NGINX).
-3. Copia `app.py` y `requirements.txt` a `/opt/dummy-b/`.
-4. Instala dependencias en el virtualenv.
+1. Verifica que el paquete ZIP recibido existe.
+2. Extrae el ZIP recibido.
+3. Copia `index.html` a `/var/www/dummy-a/` (servido por NGINX).
+4. Copia `app.py` y `requirements.txt` a `/opt/dummy-b/` e instala dependencias en el virtualenv.
 5. Reinicia NGINX y el servicio `dummy-b` (systemd).
-6. Verifica localmente ambos endpoints.
-7. Limpia archivos temporales.
+6. Verifica que ambos servicios quedaron activos.
+7. Verifica localmente ambos endpoints.
+8. Limpia archivos temporales.
 
 ---
 
@@ -195,8 +193,13 @@ El script ejecuta en la VM:
 
 | Problema | Causa | Solución |
 |----------|-------|----------|
-| [Describir problema real] | [Causa] | [Cómo lo resolviste] |
-| | | |
+| `apt-get upgrade` se quedaba colgado al correr `setup_vm.sh` por SSH | El prompt interactivo de `needrestart` (Ubuntu 24.04) espera una TTY que no existe en una sesión SSH no interactiva | Exportar `DEBIAN_FRONTEND=noninteractive` y `NEEDRESTART_MODE=a` antes de los comandos `apt-get` |
+| NGINX no podía levantar: `bind() to 0.0.0.0:80 failed (Address already in use)` | La VM ya tenía Apache2 corriendo en el puerto 80 (de otro proyecto previo en la misma VM) | Detener y deshabilitar `apache2` (`systemctl stop/disable`) para liberar el puerto 80 |
+| `systemctl reload nginx` fallaba con "Unit cannot be reloaded because it is inactive" | NGINX nunca se había iniciado en esta VM | Cambiar `setup_vm.sh` para hacer `systemctl enable nginx --now` antes del reload |
+| El primer run de CD falló con la clave SSH y el host vacíos | Los secrets de GitHub (`AZURE_VM_HOST`, `AZURE_SSH_PRIVATE_KEY`) se crearon después de hacer el push que disparó ese run | Volver a disparar el CD manualmente (`workflow_dispatch`) una vez creados los secrets |
+| `deploy.sh` fallaba con `tee: /var/log/deploy.log: Permission denied` | El SSH del pipeline se conecta como usuario normal (`azureuser`), sin permisos para escribir en `/var/www`, `/opt/dummy-b` ni reiniciar servicios | Ejecutar `deploy.sh` con `sudo` desde `cd.yml` (la VM ya tenía sudo sin contraseña para ese usuario) |
+| El servicio `dummy-b` no arrancaba: `Failed to determine user credentials`, status `217/USER` | El archivo `dummy-b.service` tenía `User=ubuntu`, pero esa VM no tiene un usuario llamado `ubuntu` (el admin real es `azureuser`) | Quitar la directiva `User=` del unit para que el servicio corra como root, igual que el resto del deploy |
+| La VM tenía la IP pública dinámica | No se configuró como estática al crear la VM | Pendiente: pasarla a estática desde Azure (Public IP → Configuration → Static) para que no rompa el secret `AZURE_VM_HOST` en cada reinicio |
 
 ---
 
@@ -209,7 +212,7 @@ El script ejecuta en la VM:
    Configuraciones inconsistentes entre ambientes, archivos olvidados, versiones incorrectas desplegadas, errores difíciles de detectar y sin registro histórico de qué se desplegó cuándo.
 
 3. **¿Qué parte del pipeline fue más compleja?**  
-   [Respuesta personal]
+   No fue escribir el YAML de CI/CD, sino la preparación de la VM: la imagen ya tenía otro servicio (Apache) ocupando el puerto 80, el usuario del sistema no coincidía con el que asumía la plantilla del `.service` de systemd, y el script de deploy necesitaba permisos de root que el usuario SSH normal no tenía. Cada uno de estos problemas se manifestaba como un fallo distinto en el pipeline y hubo que diagnosticarlos uno por uno conectándose a la VM directamente.
 
 4. **¿Qué mejorarían en un ambiente empresarial real?**  
    - Ambientes separados (dev/staging/prod) con aprobaciones manuales para producción.  
@@ -231,7 +234,7 @@ El script ejecuta en la VM:
 
 ## 7. Conclusiones
 
-[Escribir 3-4 oraciones con la experiencia personal del laboratorio]
+Este laboratorio mostró que armar el pipeline en sí (los archivos YAML) fue la parte más rápida y predecible; lo que realmente consumió tiempo fue la infraestructura: permisos, usuarios de sistema y servicios que ya ocupaban los puertos necesarios. Cada fallo del pipeline reflejó fielmente un problema real del servidor, lo cual en definitiva es justamente el valor de la automatización: en vez de "funcionar a mano y fallar silenciosamente en producción", cada error quedó documentado en los logs de GitHub Actions con su paso exacto. Una vez resueltos esos problemas de base, el flujo `push → CI → CD → servicio actualizado` quedó funcionando de punta a punta sin intervención manual.
 
 ---
 
@@ -239,6 +242,6 @@ El script ejecuta en la VM:
 
 | Servicio | URL |
 |----------|-----|
-| Dummy A (HTML) | `http://<IP_VM>:80` |
-| Dummy B /health | `http://<IP_VM>:8080/health` |
-| Dummy B / | `http://<IP_VM>:8080` |
+| Dummy A (HTML) | `http://102.37.120.118:80` |
+| Dummy B /health | `http://102.37.120.118:8080/health` |
+| Dummy B / | `http://102.37.120.118:8080` |
